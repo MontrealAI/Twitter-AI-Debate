@@ -1,0 +1,78 @@
+name: TEMP AGIALPHA launch token-account discovery
+on:
+  pull_request:
+    branches: [master]
+permissions:
+  contents: read
+jobs:
+  discover:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Discover all non-creator launch token accounts
+        shell: bash
+        run: |
+          mkdir -p launch-output
+          cat > /tmp/discover.py <<'PY'
+          import concurrent.futures, datetime, json, threading, time, urllib.request
+          from decimal import Decimal
+          MINT='tWKHzXd5PRmxTF5cMfJkm2Ua3TcjwNNoSRUqx6Apump'; BONDING='C9GotpDVsnj9ezpAnnkGGQhmGroC3DXRVcPeZEYwHg2a'
+          ROOTS={'ASdnbd8RaqdxaX9Qnf2qJtrvKWgoExidSP5fCeaUsCc2','HjQKZr3Kx4MTAt2Dp3a2XErQJrLnTbHZGm2sZNou1af8','EGxDC9cNc7c7HzUSij3BqaLE883tso219Tgv49eGjHzD','FLZDGcEYWHdkB5C9uPH7scXeRjfCmRKSQ6KAgPcQzfD6','3vzVFAnEJ57zktNfEXWCbqX2x2rt3GLvAUrGqUvCkMXu','5EJ1VDiARZxdAkUpvLcGnXiYRADF8p8PyNngZLpeBNPJ','J68NQzHjyBiEZtBQSvuTq5RVZFJTJGFVXKLgpMv6vWPk','9FuNnfbKtxY7rQs2Bs2y31WUTdPQX3XB5thYwmkvoMML','5ZiXUSRkpAoH4pTt8oGWX8wX3XudnV4WQWXcfsgvWxM4','rvyV3R7q9FED9WLEF6VZgkn7RVChtJG5pfsCv6fqdQD','JA8FZNmx9xSHqKMSjSfGcW8dMuT2bKQ49kpE8LWjqRPG','Dpr2GgqXQ4MnckJ8QcqGx5Jwfm8xWSTKuWbzYPocLohT','Ad1omNuyeeSkU1TQjCAYc5DEdqaUrdrY52Uf526v9Hi8','HQ1qcUBSdc4p1Jcbb4qakXznUDoxFoiS6ZeZSB8CYkEk','64E835xrN3ffYVq4enbd28dJv9ARc3qTYziLCMbwXt2f','BhQeCDjFE8sJKrPVD7rfV6AV9J7fzdhT89amtYAU3L42'}
+          RPCS=['https://api.mainnet-beta.solana.com','https://solana-rpc.publicnode.com','https://rpc.ankr.com/solana']; errors=[]; lock=threading.Lock()
+          def rpc(method,params,tries=10):
+            body=json.dumps({'jsonrpc':'2.0','id':1,'method':method,'params':params}).encode(); last=None
+            for i in range(tries):
+              url=RPCS[i%len(RPCS)]; req=urllib.request.Request(url,data=body,headers={'content-type':'application/json','user-agent':'Mozilla/5.0'})
+              try:
+                with urllib.request.urlopen(req,timeout=75) as response: obj=json.loads(response.read())
+                if obj.get('error'): last=obj['error']; time.sleep(i+1); continue
+                return obj.get('result')
+              except Exception as exc: last=f'{type(exc).__name__}: {exc}'; time.sleep(i+1)
+            with lock: errors.append({'method':method,'params':str(params)[:300],'last':last}); return None
+          def get_sigs():
+            rows=[]; before=None
+            while len(rows)<10000:
+              cfg={'limit':1000,'commitment':'finalized'}
+              if before: cfg['before']=before
+              page=rpc('getSignaturesForAddress',[BONDING,cfg]) or []
+              if not page: break
+              rows+=page
+              if len(page)<1000: break
+              before=page[-1]['signature']
+            return rows
+          def tx(sig): return rpc('getTransaction',[sig,{'encoding':'jsonParsed','commitment':'finalized','maxSupportedTransactionVersion':0}])
+          def keys(txn):
+            raw=txn['transaction']['message']['accountKeys']; out=[]
+            for x in raw: out.append(x['pubkey'] if isinstance(x,dict) else x)
+            loaded=(txn.get('meta') or {}).get('loadedAddresses') or {}; return out+loaded.get('writable',[])+loaded.get('readonly',[])
+          def amt(row):
+            u=row.get('uiTokenAmount') or {}; return Decimal(u.get('amount','0'))/(Decimal(10)**int(u.get('decimals',6)))
+          def deltas(txn):
+            ks=keys(txn); meta=txn.get('meta') or {}; a={x['accountIndex']:x for x in meta.get('preTokenBalances') or [] if x.get('mint')==MINT}; b={x['accountIndex']:x for x in meta.get('postTokenBalances') or [] if x.get('mint')==MINT}; out=[]
+            for i in sorted(set(a)|set(b)):
+              x=a.get(i,{}); y=b.get(i,{}); p=amt(x); q=amt(y); out.append({'token_account':ks[i],'owner':y.get('owner') or x.get('owner'),'pre':str(p),'post':str(q),'delta':str(q-p)})
+            return out
+          sigs=get_sigs(); candidates=[x['signature'] for x in sigs if x.get('blockTime') and 1737747000<=x['blockTime']<=1737748000]
+          txs={}
+          with concurrent.futures.ThreadPoolExecutor(max_workers=16) as pool:
+            future={pool.submit(tx,s):s for s in candidates}
+            for f in concurrent.futures.as_completed(future): txs[future[f]]=f.result()
+          found={}; records=[]
+          for sig,txn in txs.items():
+            if not txn: continue
+            ds=deltas(txn); selected=[x for x in ds if x.get('owner') in ROOTS and Decimal(x['delta'])>0]
+            if selected:
+              records.append({'signature':sig,'slot':txn.get('slot'),'block_time':txn.get('blockTime'),'time_utc':datetime.datetime.fromtimestamp(txn['blockTime'],datetime.timezone.utc).isoformat(),'deltas':selected})
+              for row in selected: found[row['owner']]={'token_account':row['token_account'],'amount':row['delta'],'signature':sig}
+          report={'generated':datetime.datetime.now(datetime.timezone.utc).isoformat(),'bonding_signature_count':len(sigs),'candidate_count':len(candidates),'found':found,'records':records,'missing':sorted(ROOTS-set(found)),'errors':errors}
+          json.dump(report,open('launch-output/launch_token_accounts.json','w'),indent=2,sort_keys=True)
+          open('launch-output/README.txt','w').write(f"Bonding signatures: {len(sigs)}\nCandidates: {len(candidates)}\nRoots found: {len(found)}/16\nMissing: {sorted(ROOTS-set(found))}\nErrors: {len(errors)}\n")
+          PY
+          python /tmp/discover.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: agialpha-launch-token-accounts
+          path: launch-output
+          if-no-files-found: error
+          retention-days: 1
