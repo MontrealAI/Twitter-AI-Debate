@@ -1,0 +1,63 @@
+name: TEMP AGIALPHA fixed launch discovery
+on:
+  pull_request:
+    branches: [master]
+permissions:
+  contents: read
+jobs:
+  discover:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Query the exact launch second from archival Solana RPC
+        shell: bash
+        run: |
+          mkdir -p fixed-launch-output
+          cat > /tmp/fixed.py <<'PY'
+          import concurrent.futures,datetime,json,time,urllib.request
+          from decimal import Decimal
+          RPC='https://api.mainnet-beta.solana.com'; MINT='tWKHzXd5PRmxTF5cMfJkm2Ua3TcjwNNoSRUqx6Apump'; BONDING='C9GotpDVsnj9ezpAnnkGGQhmGroC3DXRVcPeZEYwHg2a'
+          ROOTS={'ASdnbd8RaqdxaX9Qnf2qJtrvKWgoExidSP5fCeaUsCc2','HjQKZr3Kx4MTAt2Dp3a2XErQJrLnTbHZGm2sZNou1af8','EGxDC9cNc7c7HzUSij3BqaLE883tso219Tgv49eGjHzD','FLZDGcEYWHdkB5C9uPH7scXeRjfCmRKSQ6KAgPcQzfD6','3vzVFAnEJ57zktNfEXWCbqX2x2rt3GLvAUrGqUvCkMXu','5EJ1VDiARZxdAkUpvLcGnXiYRADF8p8PyNngZLpeBNPJ','J68NQzHjyBiEZtBQSvuTq5RVZFJTJGFVXKLgpMv6vWPk','9FuNnfbKtxY7rQs2Bs2y31WUTdPQX3XB5thYwmkvoMML','5ZiXUSRkpAoH4pTt8oGWX8wX3XudnV4WQWXcfsgvWxM4','rvyV3R7q9FED9WLEF6VZgkn7RVChtJG5pfsCv6fqdQD','JA8FZNmx9xSHqKMSjSfGcW8dMuT2bKQ49kpE8LWjqRPG','Dpr2GgqXQ4MnckJ8QcqGx5Jwfm8xWSTKuWbzYPocLohT','Ad1omNuyeeSkU1TQjCAYc5DEdqaUrdrY52Uf526v9Hi8','HQ1qcUBSdc4p1Jcbb4qakXznUDoxFoiS6ZeZSB8CYkEk','64E835xrN3ffYVq4enbd28dJv9ARc3qTYziLCMbwXt2f','BhQeCDjFE8sJKrPVD7rfV6AV9J7fzdhT89amtYAU3L42'}
+          def rpc(method,params,tries=8):
+            body=json.dumps({'jsonrpc':'2.0','id':1,'method':method,'params':params}).encode();last=None
+            for i in range(tries):
+              try:
+                req=urllib.request.Request(RPC,data=body,headers={'content-type':'application/json','user-agent':'Mozilla/5.0'})
+                with urllib.request.urlopen(req,timeout=90) as response: obj=json.loads(response.read())
+                if obj.get('error'): last=obj['error'];time.sleep(i+1);continue
+                result=obj.get('result')
+                if method=='getTransaction' and result is None: last='null transaction';time.sleep(i+1);continue
+                return result
+              except Exception as exc:last=f'{type(exc).__name__}: {exc}';time.sleep(i+1)
+            return {'_error':last}
+          sigs=rpc('getSignaturesForAddress',[BONDING,{'limit':1000,'commitment':'finalized'}])
+          if isinstance(sigs,dict): sigs=[]
+          exact=[x['signature'] for x in sigs if x.get('blockTime')==1737747425]
+          def gettx(sig):return rpc('getTransaction',[sig,{'encoding':'jsonParsed','commitment':'finalized','maxSupportedTransactionVersion':0}])
+          txs={}
+          with concurrent.futures.ThreadPoolExecutor(max_workers=8) as pool:
+            futures={pool.submit(gettx,s):s for s in exact}
+            for future in concurrent.futures.as_completed(futures):txs[futures[future]]=future.result()
+          found={};records=[]
+          for sig,tx in txs.items():
+            if not tx or '_error' in tx:continue
+            raw=tx['transaction']['message']['accountKeys'];keys=[x['pubkey'] if isinstance(x,dict) else x for x in raw];loaded=(tx.get('meta') or {}).get('loadedAddresses') or {};keys+=loaded.get('writable',[])+loaded.get('readonly',[])
+            meta=tx.get('meta') or {};pre={x['accountIndex']:x for x in meta.get('preTokenBalances') or [] if x.get('mint')==MINT};post={x['accountIndex']:x for x in meta.get('postTokenBalances') or [] if x.get('mint')==MINT};deltas=[]
+            def amount(row):
+              u=row.get('uiTokenAmount') or {};return Decimal(u.get('amount','0'))/(Decimal(10)**int(u.get('decimals',6)))
+            for index in sorted(set(pre)|set(post)):
+              a=pre.get(index,{});b=post.get(index,{});p=amount(a);q=amount(b);owner=b.get('owner') or a.get('owner');row={'index':index,'token_account':keys[index],'owner':owner,'pre':str(p),'post':str(q),'delta':str(q-p)};deltas.append(row)
+              if owner in ROOTS and q-p>0:found[owner]={'token_account':keys[index],'amount':str(q-p),'signature':sig,'index':index}
+            records.append({'signature':sig,'slot':tx.get('slot'),'block_time':tx.get('blockTime'),'deltas':deltas})
+          report={'generated':datetime.datetime.now(datetime.timezone.utc).isoformat(),'signature_count':len(sigs),'exact_second_signatures':exact,'found':found,'missing':sorted(ROOTS-set(found)),'records':records}
+          json.dump(report,open('fixed-launch-output/launch.json','w'),indent=2,sort_keys=True)
+          open('fixed-launch-output/README.txt','w').write(f"All signatures: {len(sigs)}\nExact launch-second signatures: {len(exact)}\nRoots found: {len(found)}/16\nMissing: {sorted(ROOTS-set(found))}\n")
+          PY
+          python /tmp/fixed.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: agialpha-fixed-launch-token-accounts
+          path: fixed-launch-output
+          if-no-files-found: error
+          retention-days: 1
