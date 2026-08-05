@@ -1,1 +1,1 @@
-Temporary trigger for historical AGIALPHA Bubblemaps export. Retry 3. This branch and PR will be removed after evidence retrieval.
+Temporary trigger for AGIALPHA Jupiter-lane ancestry trace. Retry 4. This branch and PR will be removed after evidence retrieval.
