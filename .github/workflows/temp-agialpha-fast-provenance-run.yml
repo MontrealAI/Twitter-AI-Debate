@@ -1,0 +1,32 @@
+name: TEMP isolated fast AGIALPHA provenance trace
+on:
+  pull_request:
+    branches: [temp-agialpha-fast-base-20260805]
+permissions:
+  contents: read
+jobs:
+  trace:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run fast archival-RPC provenance trace
+        shell: bash
+        run: |
+          mkdir -p complete-output
+          curl -fsSL 'https://raw.githubusercontent.com/MontrealAI/Twitter-AI-Debate/fc8215a5376d5de742cc3f2ab864197e17a90a6b/tools/complete_agialpha_trace.py.gz.b64' -o /tmp/trace.b64
+          base64 -d /tmp/trace.b64 | gzip -d > /tmp/complete_trace.py
+          python - <<'PY'
+          p='/tmp/complete_trace.py';s=open(p).read()
+          s=s.replace("return bool((result or {}).get('value',{}).get('executable'))", "return bool(((result or {}).get('value') or {}).get('executable'))")
+          s=s.replace('MAX_PRIVATE_SIGNATURES = 2500','MAX_PRIVATE_SIGNATURES = 500')
+          s=s.replace('MAX_ACCOUNTS = 1500','MAX_ACCOUNTS = 500')
+          open(p,'w').write(s)
+          PY
+          python /tmp/complete_trace.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: agialpha-fast-complete-provenance-trace
+          path: complete-output
+          if-no-files-found: error
+          retention-days: 1
