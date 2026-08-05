@@ -1,0 +1,150 @@
+name: TEMP AGIALPHA concurrent bundle trace
+on:
+  pull_request:
+    branches: [master]
+permissions:
+  contents: read
+jobs:
+  trace:
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v4
+      - name: Concurrent finalized Solana trace
+        shell: bash
+        run: |
+          mkdir -p concurrent-output
+          cat > /tmp/concurrent_trace.py <<'PY'
+          import csv, datetime, json, os, threading, time, urllib.request
+          from concurrent.futures import ThreadPoolExecutor, as_completed
+          from decimal import Decimal
+
+          MINT='tWKHzXd5PRmxTF5cMfJkm2Ua3TcjwNNoSRUqx6Apump'
+          ROOTS={
+            'ASdnbd8RaqdxaX9Qnf2qJtrvKWgoExidSP5fCeaUsCc2':'25943230.403807','HjQKZr3Kx4MTAt2Dp3a2XErQJrLnTbHZGm2sZNou1af8':'28424682.368785','EGxDC9cNc7c7HzUSij3BqaLE883tso219Tgv49eGjHzD':'30078436.972745','FLZDGcEYWHdkB5C9uPH7scXeRjfCmRKSQ6KAgPcQzfD6':'26308990.060494','3vzVFAnEJ57zktNfEXWCbqX2x2rt3GLvAUrGqUvCkMXu':'30404176.217719','5EJ1VDiARZxdAkUpvLcGnXiYRADF8p8PyNngZLpeBNPJ':'35536228.657306','J68NQzHjyBiEZtBQSvuTq5RVZFJTJGFVXKLgpMv6vWPk':'27100724.139584','9FuNnfbKtxY7rQs2Bs2y31WUTdPQX3XB5thYwmkvoMML':'22435606.651262','5ZiXUSRkpAoH4pTt8oGWX8wX3XudnV4WQWXcfsgvWxM4':'24618130.628879','rvyV3R7q9FED9WLEF6VZgkn7RVChtJG5pfsCv6fqdQD':'36974661.624290','JA8FZNmx9xSHqKMSjSfGcW8dMuT2bKQ49kpE8LWjqRPG':'31158853.205364','Dpr2GgqXQ4MnckJ8QcqGx5Jwfm8xWSTKuWbzYPocLohT':'34777696.392602','Ad1omNuyeeSkU1TQjCAYc5DEdqaUrdrY52Uf526v9Hi8':'39065855.404438','HQ1qcUBSdc4p1Jcbb4qakXznUDoxFoiS6ZeZSB8CYkEk':'28579916.815210','64E835xrN3ffYVq4enbd28dJv9ARc3qTYziLCMbwXt2f':'31116018.648642','BhQeCDjFE8sJKrPVD7rfV6AV9J7fzdhT89amtYAU3L42':'34005363.237445'
+          }
+          STOP={'C9GotpDVsnj9ezpAnnkGGQhmGroC3DXRVcPeZEYwHg2a','5Q544fKrFoe6tsEbD7S8EmxGTJYAKtTVhAW5Q5pge4j1','ASTyfSima4LLAdDgoFGkgqoKowG1LZFDr9fAQrg7iaJZ','6LXutJvKUw8Q5ue2gCgKHQdAN4suWW8awzFVC6XCguFx','ARu4n5mFdZogZAravu7CcizaojWnS6oqka37gdLT5SZn'}
+          RPCS=['https://api.mainnet-beta.solana.com','https://solana-rpc.publicnode.com','https://rpc.ankr.com/solana']
+          errors=[]; provider_counts={}; lock=threading.Lock()
+
+          def rpc(method,params,tries=9):
+            payload=json.dumps({'jsonrpc':'2.0','id':1,'method':method,'params':params}).encode(); last=None
+            offset=abs(hash(str(params)[:80]))%len(RPCS)
+            for attempt in range(tries):
+              url=RPCS[(offset+attempt)%len(RPCS)]
+              request=urllib.request.Request(url,data=payload,headers={'content-type':'application/json','user-agent':'Mozilla/5.0'})
+              try:
+                with urllib.request.urlopen(request,timeout=60) as response: obj=json.loads(response.read())
+                if obj.get('error'):
+                  last=obj['error']; time.sleep(min(5,.4*(attempt+1))); continue
+                with lock: provider_counts[url]=provider_counts.get(url,0)+1
+                return obj.get('result')
+              except Exception as exc:
+                last=f'{type(exc).__name__}: {exc}'; time.sleep(min(5,.4*(attempt+1)))
+            with lock: errors.append({'method':method,'params':str(params)[:400],'last':last})
+            return None
+
+          def parallel(items,fn,workers=12):
+            out={}
+            with ThreadPoolExecutor(max_workers=workers) as pool:
+              future_map={pool.submit(fn,key):key for key in items}
+              for future in as_completed(future_map):
+                key=future_map[future]
+                try: out[key]=future.result()
+                except Exception as exc:
+                  out[key]=None
+                  with lock: errors.append({'stage':'parallel','key':key,'error':f'{type(exc).__name__}: {exc}'})
+            return out
+
+          def keys_signers(tx):
+            raw=tx['transaction']['message']['accountKeys']; keys=[]; signers=[]
+            for account in raw:
+              if isinstance(account,dict):
+                keys.append(account['pubkey'])
+                if account.get('signer'): signers.append(account['pubkey'])
+              else: keys.append(account)
+            loaded=(tx.get('meta') or {}).get('loadedAddresses') or {}; keys+=loaded.get('writable',[])+loaded.get('readonly',[])
+            if not signers and raw and not isinstance(raw[0],dict):
+              signers=keys[:tx['transaction']['message'].get('header',{}).get('numRequiredSignatures',0)]
+            return keys,signers
+
+          def quantity(row):
+            value=row.get('uiTokenAmount') or {}; return Decimal(value.get('amount','0'))/(Decimal(10)**int(value.get('decimals',6)))
+
+          def deltas(tx):
+            keys,_=keys_signers(tx); meta=tx.get('meta') or {}
+            pre={x['accountIndex']:x for x in meta.get('preTokenBalances') or [] if x.get('mint')==MINT}; post={x['accountIndex']:x for x in meta.get('postTokenBalances') or [] if x.get('mint')==MINT}
+            rows=[]
+            for index in sorted(set(pre)|set(post)):
+              before=pre.get(index,{}); after=post.get(index,{}); p=quantity(before); q=quantity(after)
+              rows.append({'token_account':keys[index] if index<len(keys) else None,'owner':after.get('owner') or before.get('owner'),'pre':str(p),'post':str(q),'delta':str(q-p)})
+            return rows
+
+          owners=set(ROOTS); processed=set(); owner_accounts={}; histories={}; transactions={}; direct_edges=[]; terminal_events=[]; seen_signatures=set()
+          for iteration in range(16):
+            new_owners=sorted(owners-processed)
+            if not new_owners or len(owners)>2000: break
+            account_results=parallel(new_owners,lambda owner:rpc('getTokenAccountsByOwner',[owner,{'mint':MINT},{'encoding':'jsonParsed','commitment':'finalized'}]),12)
+            token_accounts=[]; ta_owner={}
+            for owner,result in account_results.items():
+              values=(result or {}).get('value',[]); parsed=[]
+              for item in values:
+                info=item['account']['data']['parsed']['info']; ta=item['pubkey']; ta_owner[ta]=owner; token_accounts.append(ta)
+                parsed.append({'token_account':ta,'amount':info['tokenAmount']['uiAmountString'],'state':info.get('state')})
+              owner_accounts[owner]=parsed
+            history_results=parallel([ta for ta in token_accounts if ta_owner[ta] not in STOP],lambda ta:rpc('getSignaturesForAddress',[ta,{'limit':1000,'commitment':'finalized'}]),12)
+            signatures=[]
+            for ta,rows in history_results.items():
+              rows=rows or []; histories[ta]={'count':len(rows),'truncated':len(rows)==1000}
+              if len(rows)==1000:
+                terminal_events.append({'owner':ta_owner[ta],'token_account':ta,'reason':'history_1000_plus'}); continue
+              for row in rows:
+                signature=row['signature']
+                if signature not in seen_signatures: seen_signatures.add(signature); signatures.append(signature)
+            tx_results=parallel(signatures,lambda signature:rpc('getTransaction',[signature,{'encoding':'jsonParsed','commitment':'finalized','maxSupportedTransactionVersion':0}]),18)
+            discovered=set()
+            for signature,tx in tx_results.items():
+              if not tx: continue
+              ds=deltas(tx)
+              if not ds: continue
+              keys,signers=keys_signers(tx); block_time=tx.get('blockTime'); programs=set()
+              for instruction in tx['transaction']['message'].get('instructions') or []: programs.add(instruction.get('programId') or instruction.get('program'))
+              for group in (tx.get('meta') or {}).get('innerInstructions') or []:
+                for instruction in group.get('instructions') or []: programs.add(instruction.get('programId') or instruction.get('program'))
+              record={'signature':signature,'slot':tx.get('slot'),'block_time':block_time,'time_utc':datetime.datetime.fromtimestamp(block_time,datetime.timezone.utc).isoformat() if block_time else None,'fee_payer':signers[0] if signers else (keys[0] if keys else None),'signers':signers,'success':(tx.get('meta') or {}).get('err') is None,'programs':sorted(x for x in programs if x),'deltas':ds}; transactions[signature]=record
+              negatives=[x for x in ds if Decimal(x['delta'])<0 and x.get('owner') in owners]; positives=[x for x in ds if Decimal(x['delta'])>0]
+              if len(negatives)==1 and len(positives)==1 and abs(-Decimal(negatives[0]['delta'])-Decimal(positives[0]['delta']))<=Decimal('0.000001'):
+                source=negatives[0]; destination=positives[0]; dest=destination.get('owner')
+                direct_edges.append({'signature':signature,'slot':tx.get('slot'),'time_utc':record['time_utc'],'from_owner':source.get('owner'),'from_token_account':source.get('token_account'),'to_owner':dest,'to_token_account':destination.get('token_account'),'amount':str(Decimal(destination['delta'])),'fee_payer':record['fee_payer'],'programs':record['programs']})
+                if dest and dest not in STOP and dest not in owners: discovered.add(dest)
+              elif negatives:
+                terminal_events.append({'signature':signature,'slot':tx.get('slot'),'time_utc':record['time_utc'],'owners':[x.get('owner') for x in negatives],'reason':'market_or_complex','deltas':ds,'programs':record['programs']})
+            processed.update(new_owners); owners.update(discovered)
+
+          refreshed=parallel(sorted(owners),lambda owner:rpc('getTokenAccountsByOwner',[owner,{'mint':MINT},{'encoding':'jsonParsed','commitment':'finalized'}]),12)
+          for owner,result in refreshed.items():
+            owner_accounts[owner]=[{'token_account':item['pubkey'],'amount':item['account']['data']['parsed']['info']['tokenAmount']['uiAmountString'],'state':item['account']['data']['parsed']['info'].get('state')} for item in (result or {}).get('value',[])]
+          report={'generated_at_utc':datetime.datetime.now(datetime.timezone.utc).isoformat(),'mint':MINT,'roots':ROOTS,'owner_count':len(owners),'owners':sorted(owners),'owner_token_accounts':owner_accounts,'histories':histories,'transactions':transactions,'direct_edges':direct_edges,'terminals':terminal_events,'providers':provider_counts,'errors':errors}
+          json.dump(report,open('concurrent-output/bundle_trace.json','w'),indent=2,sort_keys=True)
+          with open('concurrent-output/direct_edges.csv','w',newline='') as handle:
+            cols=['time_utc','slot','signature','from_owner','from_token_account','to_owner','to_token_account','amount','fee_payer','programs']; writer=csv.DictWriter(handle,fieldnames=cols); writer.writeheader()
+            for row in sorted(direct_edges,key=lambda x:(x.get('slot') or 0,x['signature'])):
+              row=dict(row); row['programs']=json.dumps(row['programs']); writer.writerow(row)
+          with open('concurrent-output/accounts.csv','w',newline='') as handle:
+            writer=csv.writer(handle); writer.writerow(['owner','token_account','current_amount','state','history_count','history_truncated'])
+            for owner,items in sorted(owner_accounts.items()):
+              for item in items:
+                h=histories.get(item['token_account'],{}); writer.writerow([owner,item['token_account'],item['amount'],item.get('state'),h.get('count'),h.get('truncated')])
+          with open('concurrent-output/events.csv','w',newline='') as handle:
+            writer=csv.writer(handle); writer.writerow(['time_utc','slot','signature','fee_payer','signers','programs','token_account','owner','pre','post','delta'])
+            for record in sorted(transactions.values(),key=lambda x:(x.get('slot') or 0,x['signature'])):
+              for delta in record['deltas']: writer.writerow([record['time_utc'],record['slot'],record['signature'],record['fee_payer'],json.dumps(record['signers']),json.dumps(record['programs']),delta['token_account'],delta['owner'],delta['pre'],delta['post'],delta['delta']])
+          open('concurrent-output/README.txt','w').write(f"Owners: {len(owners)}\nTransactions: {len(transactions)}\nDirect edges: {len(direct_edges)}\nTerminals: {len(terminal_events)}\nErrors: {len(errors)}\n")
+          PY
+          python /tmp/concurrent_trace.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: agialpha-concurrent-bundle-trace
+          path: concurrent-output
+          if-no-files-found: error
+          retention-days: 1
