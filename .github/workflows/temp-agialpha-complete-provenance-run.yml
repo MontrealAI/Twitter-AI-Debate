@@ -1,0 +1,26 @@
+name: TEMP isolated AGIALPHA complete provenance trace
+on:
+  pull_request:
+    branches: [temp-agialpha-complete-base-20260805]
+permissions:
+  contents: read
+jobs:
+  trace:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run complete archival-RPC provenance trace
+        shell: bash
+        run: |
+          mkdir -p complete-output
+          curl -fsSL 'https://raw.githubusercontent.com/MontrealAI/Twitter-AI-Debate/4da66f7cedb2672b9c405970decc515d59655980/.github/workflows/temp-agialpha-complete-provenance-pr.yml' -o /tmp/source.yml
+          awk '/^H4sI/{p=1} p{if($0=="B64")exit; print}' /tmp/source.yml > /tmp/complete_trace.py.gz.b64
+          base64 -d /tmp/complete_trace.py.gz.b64 | gzip -d > /tmp/complete_trace.py
+          python /tmp/complete_trace.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: agialpha-complete-provenance-trace
+          path: complete-output
+          if-no-files-found: error
+          retention-days: 1
