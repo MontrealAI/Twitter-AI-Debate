@@ -1,1 +1,1 @@
-Temporary trigger for the direct 16-root AGIALPHA ledger trace. This branch and pull request will not be merged.
+Temporary trigger for the direct 16-root AGIALPHA ledger trace. Retry 2. This branch and pull request will not be merged.
