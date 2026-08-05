@@ -1,0 +1,50 @@
+name: TEMP AGIALPHA PR forensics
+on:
+  pull_request:
+    branches: [master]
+permissions:
+  contents: read
+jobs:
+  forensics:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install Playwright
+        run: |
+          npm init -y >/dev/null 2>&1
+          npm install playwright@1.54.2 >/dev/null 2>&1
+          npx playwright install chromium --with-deps >/dev/null 2>&1
+      - name: Discover Bubblemaps public data
+        shell: bash
+        run: |
+          mkdir -p output
+          cat > /tmp/discover.mjs <<'JS'
+          import { chromium } from 'playwright';
+          import fs from 'fs';
+          const mint='tWKHzXd5PRmxTF5cMfJkm2Ua3TcjwNNoSRUqx6Apump';
+          const out={generated:new Date().toISOString(),mint,pages:[],direct:{}};
+          const browser=await chromium.launch({headless:true});
+          const context=await browser.newContext({viewport:{width:1920,height:1080},userAgent:'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/150 Safari/537.36'});
+          const urls=[`https://v2.bubblemaps.io/map?address=${mint}&chain=solana&partnerId=regular`,`https://app.bubblemaps.io/sol/token/${mint}`];
+          for(let pi=0;pi<urls.length;pi++){
+            const page=await context.newPage(); const p={requested:urls[pi],requests:[],responses:[],console:[],errors:[]};
+            page.on('console',m=>p.console.push({type:m.type(),text:m.text()})); page.on('pageerror',e=>p.errors.push(String(e)));
+            page.on('request',req=>{const u=req.url();if(/bubble|map|cluster|holder|node|graph|token|snapshot|history|travel|time|api/i.test(u))p.requests.push({url:u,method:req.method(),resourceType:req.resourceType(),postData:req.postData()});});
+            page.on('response',async res=>{const u=res.url();const h=await res.allHeaders().catch(()=>({}));const ct=h['content-type']||'';if(/bubble|map|cluster|holder|node|graph|token|snapshot|history|travel|time|api/i.test(u)||/json|javascript/i.test(ct)){let body='';try{body=await res.text();}catch{};p.responses.push({url:u,status:res.status(),contentType:ct,body:body.slice(0,5000000)});}});
+            try{await page.goto(urls[pi],{waitUntil:'domcontentloaded',timeout:120000});await page.waitForTimeout(60000);p.finalUrl=page.url();p.title=await page.title();p.bodyText=(await page.locator('body').innerText()).slice(0,1000000);p.html=(await page.content()).slice(0,5000000);p.cookies=await context.cookies();p.localStorage=await page.evaluate(()=>Object.fromEntries(Object.keys(localStorage).map(k=>[k,localStorage.getItem(k)]))).catch(()=>({}));p.sessionStorage=await page.evaluate(()=>Object.fromEntries(Object.keys(sessionStorage).map(k=>[k,sessionStorage.getItem(k)]))).catch(()=>({}));p.buttons=await page.locator('button').evaluateAll(els=>els.map((e,i)=>({i,text:(e.innerText||'').trim(),aria:e.getAttribute('aria-label'),title:e.getAttribute('title')})).filter(x=>x.text||x.aria||x.title)).catch(()=>[]);p.inputs=await page.locator('input').evaluateAll(els=>els.map((e,i)=>({i,placeholder:e.getAttribute('placeholder'),type:e.getAttribute('type'),aria:e.getAttribute('aria-label'),value:e.value}))).catch(()=>[]);await page.screenshot({path:`output/page-${pi}.png`,fullPage:true});}catch(e){p.errors.push(String(e));}
+            out.pages.push(p);await page.close();
+          }
+          for(const u of [`https://api-legacy.bubblemaps.io/map-availability?chain=sol&token=${mint}`,`https://api-legacy.bubblemaps.io/map-data?chain=sol&token=${mint}`,`https://api-legacy.bubblemaps.io/map-metadata?chain=sol&token=${mint}`,`https://api.bubblemaps.io/maps/solana/${mint}`]){try{const r=await context.request.get(u,{timeout:60000});out.direct[u]={status:r.status(),headers:await r.allHeaders(),body:(await r.text()).slice(0,15000000)};}catch(e){out.direct[u]={error:String(e)};}}
+          fs.writeFileSync('output/discovery.json',JSON.stringify(out,null,2));await browser.close();
+          JS
+          node /tmp/discover.mjs
+      - uses: actions/upload-artifact@v4
+        with:
+          name: agialpha-bubblemaps-discovery
+          path: output
+          if-no-files-found: error
+          retention-days: 1
