@@ -1,0 +1,54 @@
+name: TEMP AGIALPHA indexed-source test
+on:
+  pull_request:
+    branches: [master]
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test Solscan and SolanaFM historical endpoints
+        shell: bash
+        run: |
+          mkdir -p indexer-test
+          cat > /tmp/test.py <<'PY'
+          import json,urllib.request,urllib.parse,random,string,datetime
+          ADDR='Dpr2GgqXQ4MnckJ8QcqGx5Jwfm8xWSTKuWbzYPocLohT'
+          TA='6gXTuTkX6JEFX3USKp1iMC3NHL9jaSco7rvJuAGaEznB'
+          SIG='517EJF61yXwj5ekcGt1f3zzBZAgUYdJ39cHQRtRmirGdFLnRPsvkuWkkZpxyzbJ6CDu2K9rsH2yZ31ThPqQ8bbcz'
+          MINT='tWKHzXd5PRmxTF5cMfJkm2Ua3TcjwNNoSRUqx6Apump'
+          def solaut():
+            chars='abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789==--'
+            t=''.join(random.choice(chars) for _ in range(15));r=''.join(random.choice(chars) for _ in range(15));n=random.randrange(31);s=t+r
+            return s[:n]+'B9dls0fK'+s[n:]
+          def get(url,sol=False):
+            h={'User-Agent':'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/150 Safari/537.36','Accept':'application/json,text/plain,*/*'}
+            if sol:h.update({'sol-aut':solaut(),'Referer':'https://solscan.io/','Origin':'https://solscan.io'})
+            req=urllib.request.Request(url,headers=h)
+            try:
+              with urllib.request.urlopen(req,timeout=90) as x:
+                b=x.read();return {'status':x.status,'headers':dict(x.headers),'text':b.decode('utf-8','replace')[:3000000]}
+            except Exception as e:return {'error':f'{type(e).__name__}: {e}'}
+          urls={
+            'solscan_owner_transfers':f'https://api-v2.solscan.io/v2/account/transfer?address={ADDR}&page=1&page_size=100&remove_spam=true&exclude_amount_zero=true',
+            'solscan_ta_transfers':f'https://api-v2.solscan.io/v2/account/transfer?address={TA}&page=1&page_size=100&remove_spam=true&exclude_amount_zero=true',
+            'solscan_tx':f'https://api-v2.solscan.io/v2/transaction/detail?tx={SIG}',
+            'solanafm_owner_transfers':f'https://api.solana.fm/v0/accounts/{ADDR}/transfers?mint={MINT}&limit=100&page=1',
+            'solanafm_ta_transfers':f'https://api.solana.fm/v0/accounts/{TA}/transfers?mint={MINT}&limit=100&page=1',
+            'solanafm_owner_transactions':f'https://api.solana.fm/v0/accounts/{ADDR}/transactions?mint={MINT}&limit=1000&page=1',
+            'solanafm_tx':f'https://api.solana.fm/v0/transactions/{SIG}'
+          }
+          out={'generated':datetime.datetime.now(datetime.timezone.utc).isoformat(),'results':{}}
+          for k,u in urls.items():out['results'][k]=get(u,k.startswith('solscan'))
+          json.dump(out,open('indexer-test/results.json','w'),indent=2)
+          PY
+          python /tmp/test.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: agialpha-indexer-test
+          path: indexer-test
+          if-no-files-found: error
+          retention-days: 1
