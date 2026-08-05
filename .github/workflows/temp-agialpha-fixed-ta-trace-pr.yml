@@ -1,0 +1,151 @@
+name: TEMP AGIALPHA full trace from launch token accounts
+on:
+  pull_request:
+    branches: [master]
+permissions:
+  contents: read
+jobs:
+  trace:
+    runs-on: ubuntu-latest
+    timeout-minutes: 110
+    steps:
+      - uses: actions/checkout@v4
+      - name: Trace every descendant of the 16 non-creator launch token accounts
+        shell: bash
+        run: |
+          mkdir -p fixed-ta-output
+          cat > /tmp/trace.py <<'PY'
+          import csv,datetime,json,threading,time,urllib.request
+          from collections import deque
+          from concurrent.futures import ThreadPoolExecutor,as_completed
+          from decimal import Decimal
+          MINT='tWKHzXd5PRmxTF5cMfJkm2Ua3TcjwNNoSRUqx6Apump';BONDING='C9GotpDVsnj9ezpAnnkGGQhmGroC3DXRVcPeZEYwHg2a';RAYDIUM='5Q544fKrFoe6tsEbD7S8EmxGTJYAKtTVhAW5Q5pge4j1'
+          ROOTS={
+          '3vzVFAnEJ57zktNfEXWCbqX2x2rt3GLvAUrGqUvCkMXu':{'amount':'30404176.217719','ta':'EvnS8uXEgrBtLvjw8S7B2haqpK1udHhRvweNW3MEe459'},
+          '5EJ1VDiARZxdAkUpvLcGnXiYRADF8p8PyNngZLpeBNPJ':{'amount':'35536228.657306','ta':'EZ9V9bZRPfD5rvvkXKe7CspM8nqjv8npEitSHZwjy5mA'},
+          '5ZiXUSRkpAoH4pTt8oGWX8wX3XudnV4WQWXcfsgvWxM4':{'amount':'24618130.628879','ta':'7aX2Z4zZhfspHNBg7CXi3ZPKVo14BRnL8WAT6DA885Bu'},
+          '64E835xrN3ffYVq4enbd28dJv9ARc3qTYziLCMbwXt2f':{'amount':'31116018.648642','ta':'9rHtJp7UuDwY2qLW7YVnLiorVyGotsmgtpZxfSfy9NZe'},
+          '9FuNnfbKtxY7rQs2Bs2y31WUTdPQX3XB5thYwmkvoMML':{'amount':'22435606.651262','ta':'AcWUh5NS4KseE64wRedyZT3QcffLDNaRPUm6x6qPxwt1'},
+          'ASdnbd8RaqdxaX9Qnf2qJtrvKWgoExidSP5fCeaUsCc2':{'amount':'25943230.403807','ta':'AA5vGzSBtAFpuAUHSfRHqYEY36r7HP6jhjQApmWMXhyx'},
+          'Ad1omNuyeeSkU1TQjCAYc5DEdqaUrdrY52Uf526v9Hi8':{'amount':'39065855.404438','ta':'3hADFEXza8Leg3iqgtHy2kaVoRzj32RKHTrLmj1HMjXa'},
+          'BhQeCDjFE8sJKrPVD7rfV6AV9J7fzdhT89amtYAU3L42':{'amount':'34005363.237445','ta':'BWA6dL6vEskSS3EhLxdvXG3P61Jkxf82t36en1ywgpcb'},
+          'Dpr2GgqXQ4MnckJ8QcqGx5Jwfm8xWSTKuWbzYPocLohT':{'amount':'34777696.392602','ta':'6gXTuTkX6JEFX3USKp1iMC3NHL9jaSco7rvJuAGaEznB'},
+          'EGxDC9cNc7c7HzUSij3BqaLE883tso219Tgv49eGjHzD':{'amount':'30078436.972745','ta':'GxM2Pss6biFSNamYvVjmqWLrYnE5mqTjPU7msoZ5KdgW'},
+          'FLZDGcEYWHdkB5C9uPH7scXeRjfCmRKSQ6KAgPcQzfD6':{'amount':'26308990.060494','ta':'6EZqtm78G4PDZHKagmZ61uwuTm3h8o6qzLX7AFMadUEG'},
+          'HQ1qcUBSdc4p1Jcbb4qakXznUDoxFoiS6ZeZSB8CYkEk':{'amount':'28579916.815210','ta':'5Ud5LEzXTKJKDLj7YiUKAity9TQkgvYYeYdNacz88FNE'},
+          'HjQKZr3Kx4MTAt2Dp3a2XErQJrLnTbHZGm2sZNou1af8':{'amount':'28424682.368785','ta':'C5E7fKFyZp7icZuQ5bALCRwWP5hJzcHBMgC4Ro1Afhia'},
+          'J68NQzHjyBiEZtBQSvuTq5RVZFJTJGFVXKLgpMv6vWPk':{'amount':'27100724.139584','ta':'6SnnupDyr9NJ6DJ51fsTjxiEHzE7ZopvhYmc94QvvQPe'},
+          'JA8FZNmx9xSHqKMSjSfGcW8dMuT2bKQ49kpE8LWjqRPG':{'amount':'31158853.205364','ta':'Ejj4CwoH9oFynmj53rLNv3XdaRRBYtM8XAk7VM6vjDpi'},
+          'rvyV3R7q9FED9WLEF6VZgkn7RVChtJG5pfsCv6fqdQD':{'amount':'36974661.624290','ta':'Ep1i3GURunM1eDUDE6y1xic8Nrf52MTFdGBaU4HYADiQ'}}
+          CEX={'ASTyfSima4LLAdDgoFGkgqoKowG1LZFDr9fAQrg7iaJZ':'MEXC'};STOP={BONDING,RAYDIUM,*CEX.keys()}
+          DEX={'675kPX9MHTjS2zt1qfr1NYHuzeLXfQM9H24wFSUt1Mp8','CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK','JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5LwSRE3Z','LBUZKhRxPF3XUpBCjp4YzTKgLccjZhTSDM9YuVaPwxo','DeJBGdMFa1uynnnKiwrVioatTuHmNLpyFKnmB5kaFdzQ'}
+          RPCS=['https://api.mainnet-beta.solana.com','https://solana-rpc.publicnode.com','https://rpc.ankr.com/solana'];errors=[];providers={};lock=threading.Lock();cache={}
+          def rpc(method,params,tries=10):
+            body=json.dumps({'jsonrpc':'2.0','id':1,'method':method,'params':params}).encode();last=None;offset=abs(hash(method+str(params)[:100]))%3
+            for i in range(tries):
+              url=RPCS[(offset+i)%3]
+              try:
+                req=urllib.request.Request(url,data=body,headers={'content-type':'application/json','user-agent':'Mozilla/5.0'})
+                with urllib.request.urlopen(req,timeout=80) as response:obj=json.loads(response.read())
+                if obj.get('error'):last=obj['error'];time.sleep(min(6,.5*(i+1)));continue
+                result=obj.get('result')
+                if method=='getTransaction' and result is None:last='null transaction';time.sleep(min(6,.5*(i+1)));continue
+                with lock:providers[url]=providers.get(url,0)+1
+                return result
+              except Exception as exc:last=f'{type(exc).__name__}: {exc}';time.sleep(min(6,.5*(i+1)))
+            with lock:errors.append({'method':method,'params':str(params)[:400],'last':last});return None
+          def parallel(items,fn,workers=16):
+            out={}
+            with ThreadPoolExecutor(max_workers=workers) as pool:
+              fm={pool.submit(fn,x):x for x in items}
+              for f in as_completed(fm):
+                x=fm[f]
+                try:out[x]=f.result()
+                except Exception as exc:out[x]=None;errors.append({'stage':'parallel','item':str(x),'error':str(exc)})
+            return out
+          def sigs(address,maxn=5000):
+            rows=[];before=None
+            while len(rows)<maxn:
+              cfg={'limit':min(1000,maxn-len(rows)),'commitment':'finalized'}
+              if before:cfg['before']=before
+              page=rpc('getSignaturesForAddress',[address,cfg]) or []
+              if not page:break
+              rows+=page
+              if len(page)<cfg['limit']:break
+              before=page[-1]['signature']
+            return rows
+          def tx(signature):
+            with lock:
+              if signature in cache:return cache[signature]
+            result=rpc('getTransaction',[signature,{'encoding':'jsonParsed','commitment':'finalized','maxSupportedTransactionVersion':0}])
+            with lock:cache[signature]=result
+            return result
+          def keydata(t):
+            raw=t['transaction']['message']['accountKeys'];keys=[];signers=[]
+            for x in raw:
+              if isinstance(x,dict):keys.append(x['pubkey']);signers += [x['pubkey']] if x.get('signer') else []
+              else:keys.append(x)
+            loaded=(t.get('meta') or {}).get('loadedAddresses') or {};keys+=loaded.get('writable',[])+loaded.get('readonly',[])
+            return keys,signers
+          def amount(row):
+            u=row.get('uiTokenAmount') or {};return Decimal(u.get('amount','0'))/(Decimal(10)**int(u.get('decimals',6)))
+          def deltas(t):
+            keys,_=keydata(t);meta=t.get('meta') or {};a={x['accountIndex']:x for x in meta.get('preTokenBalances') or [] if x.get('mint')==MINT};b={x['accountIndex']:x for x in meta.get('postTokenBalances') or [] if x.get('mint')==MINT};out=[]
+            for i in sorted(set(a)|set(b)):
+              x=a.get(i,{});y=b.get(i,{});p=amount(x);q=amount(y);out.append({'token_account':keys[i],'owner':y.get('owner') or x.get('owner'),'pre':str(p),'post':str(q),'delta':str(q-p)})
+            return out
+          def progs(t):
+            out=set()
+            for ix in t['transaction']['message'].get('instructions') or []:out.add(ix.get('programId') or ix.get('program'))
+            for g in (t.get('meta') or {}).get('innerInstructions') or []:
+              for ix in g.get('instructions') or []:out.add(ix.get('programId') or ix.get('program'))
+            return sorted(x for x in out if x)
+          queue=deque((v['ta'],owner,0) for owner,v in ROOTS.items());seen=set();tainfo={};transactions={};edges=[];terminals=[]
+          while queue and len(seen)<3000:
+            batch=[]
+            while queue and len(batch)<60:
+              ta,owner,depth=queue.popleft()
+              if ta in seen or depth>25:continue
+              seen.add(ta);batch.append((ta,owner,depth))
+            if not batch:continue
+            histories=parallel([x[0] for x in batch],lambda a:sigs(a,5000),12);sset=set()
+            for ta,owner,depth in batch:
+              hs=histories.get(ta) or [];tainfo[ta]={'owner':owner,'depth':depth,'signature_count':len(hs),'truncated':len(hs)>=5000};sset.update(x['signature'] for x in hs)
+            txs=parallel(sorted(sset),tx,18);batchta={x[0] for x in batch};new=[]
+            for signature,t in txs.items():
+              if not t:continue
+              ds=deltas(t);affected=[x for x in ds if x['token_account'] in batchta and Decimal(x['delta'])!=0]
+              if not affected:continue
+              keys,signers=keydata(t);programs=progs(t);bt=t.get('blockTime');record={'signature':signature,'slot':t.get('slot'),'block_time':bt,'time_utc':datetime.datetime.fromtimestamp(bt,datetime.timezone.utc).isoformat() if bt else None,'fee_payer':signers[0] if signers else keys[0],'signers':signers,'programs':programs,'success':(t.get('meta') or {}).get('err') is None,'deltas':ds};transactions[signature]=record
+              neg=[x for x in ds if Decimal(x['delta'])<0];pos=[x for x in ds if Decimal(x['delta'])>0];tracked=[x for x in neg if x['token_account'] in batchta];dex=bool(set(programs)&DEX) or any(x.get('owner') in {BONDING,RAYDIUM} for x in pos)
+              totalneg=sum(-Decimal(x['delta']) for x in neg)
+              for source in tracked:
+                loss=-Decimal(source['delta'])
+                for destination in pos:
+                  raw=Decimal(destination['delta']);allocated=raw if len(neg)==1 else raw*loss/totalneg
+                  owner=destination.get('owner');category='wallet'
+                  if owner in CEX:category='cex'
+                  elif owner in {BONDING,RAYDIUM} or dex:category='dex'
+                  elif owner in STOP:category='infrastructure'
+                  edges.append({'signature':signature,'slot':t.get('slot'),'time_utc':record['time_utc'],'from_token_account':source['token_account'],'from_owner':source.get('owner'),'to_token_account':destination['token_account'],'to_owner':owner,'amount':str(allocated),'raw_destination_delta':destination['delta'],'negative_count':len(neg),'positive_count':len(pos),'category':category,'fee_payer':record['fee_payer'],'programs':programs})
+                  if category=='wallet' and owner and destination.get('token_account'):new.append((destination['token_account'],owner,tainfo[source['token_account']]['depth']+1))
+                if not pos:terminals.append({'signature':signature,'time_utc':record['time_utc'],'source_token_account':source['token_account'],'source_owner':source.get('owner'),'amount':str(loss),'category':'unresolved_no_positive','programs':programs})
+            queue.extend(new)
+          balances=parallel(sorted(seen),lambda a:rpc('getTokenAccountBalance',[a,{'commitment':'finalized'}]),16)
+          for ta,result in balances.items():tainfo.setdefault(ta,{})['current_balance']=((result or {}).get('value') or {}).get('uiAmountString') if result else None
+          report={'generated_at_utc':datetime.datetime.now(datetime.timezone.utc).isoformat(),'scope':'16 non-creator launch buyers only; creator launch transaction excluded','mint':MINT,'roots':ROOTS,'token_accounts':tainfo,'transactions':transactions,'flow_edges':edges,'terminal_events':terminals,'providers':providers,'errors':errors};json.dump(report,open('fixed-ta-output/trace.json','w'),indent=2,sort_keys=True)
+          with open('fixed-ta-output/edges.csv','w',newline='') as h:
+            cols=['time_utc','slot','signature','from_owner','from_token_account','to_owner','to_token_account','amount','raw_destination_delta','negative_count','positive_count','category','fee_payer','programs'];w=csv.DictWriter(h,fieldnames=cols);w.writeheader()
+            for row in sorted(edges,key=lambda x:(x.get('slot') or 0,x['signature'])):r=dict(row);r['programs']=json.dumps(r['programs']);w.writerow(r)
+          with open('fixed-ta-output/accounts.csv','w',newline='') as h:
+            w=csv.writer(h);w.writerow(['token_account','owner','depth','signature_count','truncated','current_balance'])
+            for ta,row in sorted(tainfo.items()):w.writerow([ta,row.get('owner'),row.get('depth'),row.get('signature_count'),row.get('truncated'),row.get('current_balance')])
+          open('fixed-ta-output/README.txt','w').write(f"Roots: 16\nToken accounts: {len(tainfo)}\nTransactions: {len(transactions)}\nEdges: {len(edges)}\nTerminals: {len(terminals)}\nErrors: {len(errors)}\n")
+          PY
+          python /tmp/trace.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: agialpha-fixed-token-account-trace
+          path: fixed-ta-output
+          if-no-files-found: error
+          retention-days: 1
