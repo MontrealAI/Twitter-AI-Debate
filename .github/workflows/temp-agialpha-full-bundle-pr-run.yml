@@ -1,4 +1,4 @@
-name: TEMP AGIALPHA full bundle PR run
+name: TEMP AGIALPHA optimized bundle-ledger PR run
 on:
   pull_request:
     branches: [master]
@@ -7,18 +7,18 @@ permissions:
 jobs:
   trace:
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
-      - name: Trace the complete non-creator launch bundle
+      - name: Trace bundle ledger with batched finalized RPC queries
         shell: bash
         run: |
           mkdir -p output
-          base64 -d TEMP_FULL_BUNDLE_TRACE.py.gz.b64 | gunzip > /tmp/full_bundle_trace.py
-          python /tmp/full_bundle_trace.py
+          base64 -d TEMP_FAST_BUNDLE_TRACE.py.gz.b64 | gunzip > /tmp/fast_bundle_trace.py
+          python /tmp/fast_bundle_trace.py
       - uses: actions/upload-artifact@v4
         with:
-          name: agialpha-full-noncreator-bundle-trace
+          name: agialpha-fast-bundle-ledger
           path: output
           if-no-files-found: error
           retention-days: 1
