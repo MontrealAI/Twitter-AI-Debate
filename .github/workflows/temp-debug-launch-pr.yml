@@ -1,0 +1,36 @@
+name: TEMP inspect AGIALPHA launch transaction
+on:
+  pull_request:
+    branches: [master]
+permissions:
+  contents: read
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Query known launch transaction
+        shell: bash
+        run: |
+          mkdir -p debug-output
+          cat > /tmp/debug.py <<'PY'
+          import json,urllib.request
+          sig='517EJF61yXwj5ekcGt1f3zzBZAgUYdJ39cHQRtRmirGdFLnRPsvkuWkkZpxyzbJ6CDu2K9rsH2yZ31ThPqQ8bbcz'
+          payload=json.dumps({'jsonrpc':'2.0','id':1,'method':'getTransaction','params':[sig,{'encoding':'jsonParsed','commitment':'finalized','maxSupportedTransactionVersion':0}]}).encode()
+          req=urllib.request.Request('https://api.mainnet-beta.solana.com',data=payload,headers={'content-type':'application/json','user-agent':'Mozilla/5.0'})
+          with urllib.request.urlopen(req,timeout=60) as r: obj=json.loads(r.read())
+          json.dump(obj,open('debug-output/transaction.json','w'),indent=2)
+          tx=obj.get('result') or {}; meta=tx.get('meta') or {}; message=(tx.get('transaction') or {}).get('message') or {}
+          print('blockTime',tx.get('blockTime'),'slot',tx.get('slot'))
+          print('keys',message.get('accountKeys'))
+          print('pre',meta.get('preTokenBalances'))
+          print('post',meta.get('postTokenBalances'))
+          PY
+          python /tmp/debug.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: agialpha-launch-debug
+          path: debug-output
+          if-no-files-found: error
+          retention-days: 1
