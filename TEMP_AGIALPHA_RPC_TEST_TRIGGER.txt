@@ -1,1 +1,1 @@
-Temporary trigger for the AGIALPHA archival RPC coverage test. This branch and PR will be reset after evidence retrieval.
+Temporary trigger for the exact 16-root AGIALPHA ledger workflow. This branch and PR will be reset after evidence retrieval.
