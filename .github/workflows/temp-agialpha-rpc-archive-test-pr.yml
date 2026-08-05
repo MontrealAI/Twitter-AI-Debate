@@ -1,0 +1,52 @@
+name: TEMP AGIALPHA archival RPC test
+on:
+  pull_request:
+    branches: [master]
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test historical transaction and address history coverage
+        shell: bash
+        run: |
+          mkdir -p rpc-test
+          cat > /tmp/test.py <<'PY'
+          import json,urllib.request,datetime,time
+          SIG='517EJF61yXwj5ekcGt1f3zzBZAgUYdJ39cHQRtRmirGdFLnRPsvkuWkkZpxyzbJ6CDu2K9rsH2yZ31ThPqQ8bbcz'
+          TA='6gXTuTkX6JEFX3USKp1iMC3NHL9jaSco7rvJuAGaEznB'
+          ENDPOINTS=[
+            'https://public.rpc.solanavibestation.com',
+            'https://rpc.solanatracker.io/public',
+            'https://solana.drpc.org',
+            'https://api.mainnet-beta.solana.com',
+            'https://solana-rpc.publicnode.com',
+            'https://rpc.ankr.com/solana'
+          ]
+          def call(url,method,params):
+            data=json.dumps({'jsonrpc':'2.0','id':1,'method':method,'params':params}).encode()
+            req=urllib.request.Request(url,data=data,headers={'content-type':'application/json','user-agent':'Mozilla/5.0'})
+            try:
+              with urllib.request.urlopen(req,timeout=90) as r:
+                body=r.read().decode('utf-8','replace');return {'status':r.status,'body':body[:3000000]}
+            except Exception as e:return {'error':f'{type(e).__name__}: {e}'}
+          out={'generated':datetime.datetime.now(datetime.timezone.utc).isoformat(),'results':{}}
+          for u in ENDPOINTS:
+            out['results'][u]={
+              'transaction_jsonParsed':call(u,'getTransaction',[SIG,{'encoding':'jsonParsed','commitment':'finalized','maxSupportedTransactionVersion':0}]),
+              'transaction_json':call(u,'getTransaction',[SIG,{'encoding':'json','commitment':'finalized','maxSupportedTransactionVersion':0}]),
+              'signatures':call(u,'getSignaturesForAddress',[TA,{'limit':1000,'commitment':'finalized'}])
+            }
+            time.sleep(1)
+          json.dump(out,open('rpc-test/results.json','w'),indent=2)
+          PY
+          python /tmp/test.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: agialpha-archival-rpc-test
+          path: rpc-test
+          if-no-files-found: error
+          retention-days: 1
