@@ -1,1 +1,1 @@
-Temporary trigger for the expedited non-creator AGIALPHA provenance trace. Retry 2. This branch and pull request will not be merged.
+Temporary trigger for the ultrafast non-creator AGIALPHA provenance trace. Retry 3. This branch and pull request will not be merged.
