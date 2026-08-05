@@ -1,1 +1,1 @@
-Temporary trigger for the Ad1 AGIALPHA root-gap resolution workflow. This branch and PR will be reset after evidence retrieval.
+Temporary trigger for the high-value unresolved AGIALPHA branch-resolution workflow. This branch and PR will be reset after evidence retrieval.
